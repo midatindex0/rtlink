@@ -1,0 +1,42 @@
+site_name: RtLink
+site_description: API wrapper for RtWalk
+repo_url: https://github.com/midatindex0/rtlink
+edit_uri: blob/main/docs/
+
+nav:
+
+  - Overview: index.md
+  - Releases:
+      - Changelog: changelog.md
+  - API Reference: api.md
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: orange
+    accent: red
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.top
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.keys
+  - admonition
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/midatindex0/rtlink
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          rendering:
+            show_source: false

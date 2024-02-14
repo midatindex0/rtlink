@@ -1,47 +1,139 @@
 import asyncio
-import functools
 from typing import Optional, Dict, List, Coroutine, TypeVar, Union, Callable, Any
+import logging
+import json
+import time
 
 from .http import HTTPClient
-from .types import User
+from .types import Comment, User, Forum
+from .utils import setup_logging
+
+from websockets.client import connect
 
 
 T = TypeVar("T")
 Coro = Coroutine[Any, Any, T]
-CoroT = TypeVar("CoroT", bound=Callable[..., Coro[Any]])
+CoroT = Callable[..., Coro[Any]]
+logger = logging.getLogger(__name__)
 
 
 class Bot:
-    def __init__(self, client: HTTPClient = None, api_url: str = None) -> None:
-        self.client: HTTPClient = client or HTTPClient(api_url=api_url)
-        self.user: Optional[User] = None
+    """The Bot isinstance represents a connection to the rtwalk API, handles events and commands.
+
+    Args:
+        api_url: Url of the rtwalk server.
+        client (rtlink.http.HTTPClient): A http client that maintains the API connection.
+        loop: Asyncio event loop.
+
+    Attributes:
+        user (rtlink.types.User): The bot user. Only available after login.
+    """
+
+    def __init__(
+        self,
+        prefix: str,
+        api_url: Optional[str] = "http://localhost:3758/api/v1",
+        client: Optional[HTTPClient] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> None:
+        self._client: HTTPClient = client or HTTPClient(
+            api_url=api_url or "http://localhost:3758/api/v1"
+        )
         self._events: Dict[str, List[Union[CoroT, Callable]]] = {}
         self._closed: bool = False
+        self._rte_options = {
+            "comment": False,
+            "comment_edit": False,
+            "post": False,
+            "post_edit": False,
+        }
+        asyncio.set_event_loop(loop)
 
-    def is_closed(self):
-        self._closed
+    def is_closed(self) -> bool:
+        """Check if the RTE connection has closed. Implies the bot has logged out.
+
+        Note:
+            There is a bit of time delay between self._closed turning True and the bot actually logging out but
+            it is bound to happen in the near future.
+
+        Returns:
+            (bool): True if the RTE connection has closed.
+        """
+        return self._closed
 
     async def start(self, token: str):
+        """Non-blocking entry point for the bot. Logs in and starts the RTE websocket connection.
+            For a blocking method use [`Bot.run`][rtlink.bot.Bot.run].
+
+        Args:
+            token (string): Your bot token
+        """
         email, password = token.split("@")
-        await self.client.login(email, password)
-        self.user = self.client.user
-        await self.on_login()
+        await self._client.login(email, password)
+        logger.info(
+            f"Bot logged in to {self._client.api_url} (ID: {self._client.user.id})"
+        )
+        logger.debug(f"Self: {self._client.user}")
+        self.user: User = self._client.user
+        await self._on_login()
         try:
-            while not self.is_closed():
-                pass
+            async with connect(
+                "{}?comment_new={}&comment_edit={}&post_new={}&post_edit={}".format(
+                    self._client.api_url.replace("http", "ws").replace("api", "rte"),
+                    self._rte_options["comment"],
+                    self._rte_options["comment_edit"],
+                    self._rte_options["post"],
+                    self._rte_options["post_edit"],
+                )
+            ) as ws:
+                self.ws = ws
+                logger.info("Listening to RTE websocket at ws://localhost:3758/rte/v1/")
+                logger.info(
+                    f"RTE websocket latency: {(await self._calc_latency_ms(ws)):.2f}ms"
+                )
+                while not self.is_closed():
+                    try:
+                        msg = json.loads(await ws.recv())
+                    except asyncio.CancelledError:
+                        logger.info("Disconnecting from RTE websocket")
+                        break
+                    logger.debug("RTE Event: {}".format(msg))
+                    if msg["event"] == "COMMENT_NEW":
+                        cmnt = Comment(**msg["item"])
+                        cmnt._client = self._client
+                        await self._on_comment(cmnt)
         except KeyboardInterrupt:
-            pass
-        await self.client.logout()
-        await self.on_logout()
+            logger.info("Received keyboard interrupt, logging out")
+        await self._client.logout()
+        logger.info("Bot has logged out")
+        await self._on_logout()
+
+    async def _calc_latency_ms(self, ws):
+        t1 = time.time()
+        await ws.ping()
+        return (time.time() - t1) * 1000
+
+    async def latency(self) -> float:
+        """The RTE websocket latency in milliseconds.
+
+        Returns:
+            (float): The latency in milliseconds.
+        """
+        return await self._calc_latency_ms(self.ws)
 
     def run(self, token: str):
         """
-        This is equivalent to calling `asyncio.run(Bot.start(token))`
+        Blocking call to start the bot. Use [`Bot.start`][rtlink.bot.Bot.start] for a nonblocking call.
+
+        This is equivalent to calling `asyncio.run(bot.start(token))`
         """
+        setup_logging()
         asyncio.run(self.start(token))
 
     def on_event(self, name: str):
         def __dec(fn):
+            if name == "comment":
+                self._rte_options["comment"] = True
             if event := self._events.get(name):
                 event.append(fn)
             else:
@@ -50,15 +142,52 @@ class Bot:
         return __dec
 
     async def dispatch(self, event: str, *args, **kwargs):
-        if event := self._events.get(event):
-            for fn in event:
-                if asyncio.iscoroutinefunction(fn):
-                    await fn(*args, **kwargs)
-                else:
-                    fn(*args, **kwargs)
+        if event_fn := self._events.get(event):
+            async with asyncio.TaskGroup() as tg:
+                for fn in event_fn:
+                    if asyncio.iscoroutinefunction(fn):
+                        tg.create_task(fn(*args, **kwargs))
+                    else:
+                        tg.create_task(asyncio.to_thread(fn, *args, **kwargs))
 
-    async def on_login(self):
+    async def _on_login(self):
         await self.dispatch("login")
 
-    async def on_logout(self):
+    async def _on_logout(self):
         await self.dispatch("logout")
+
+    async def _on_comment(self, comment: Comment):
+        await self.dispatch("comment", comment)
+
+    async def fetch_forum(
+        self,
+        name: Optional[str] = None,
+        id: Optional[str] = None,
+        ids: Optional[List[str]] = None,
+        names: Optional[List[str]] = None,
+        use_cache: bool = True,
+    ) -> Optional[Union[Forum, List[Forum]]]:
+        """Fetches a single/multiple forums using name/ids.
+        Checks the cache first and hits the API only when it can't find the forum in cache.
+
+        Args:
+            name: Name of the forum (not display name).
+            id: ID of the forum.
+            names: To fetch multiple forums by name.
+            ids: To fetch multiple forums by ID.
+
+        Returns:
+            : The forum/forums to be fetch.
+        """
+        if use_cache:
+            if r := await self._client.get_cache(name or id or ids or names):
+                if not isinstance(r, list):
+                    return r
+                elif None not in r:
+                    return r
+        return await self._client.fetch_forum(
+            name=name,
+            id=id,
+            ids=ids,
+            names=names,
+        )
