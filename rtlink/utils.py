@@ -71,7 +71,7 @@ def stream_supports_colour(stream: Any) -> bool:
 
 
 def setup_logging():
-    level = logging.INFO
+    level = logging.DEBUG
     handler = logging.StreamHandler()
     if stream_supports_colour(handler.stream):
         formatter = _ColourFormatter()

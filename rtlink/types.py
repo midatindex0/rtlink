@@ -55,6 +55,7 @@ class Comment:
     commenter_id: str
     reply_to: Optional[str]
     post_id: str
+    forum_id: str
     created_at: int
     modified_at: int
     reply_count: int
@@ -79,6 +80,7 @@ class Comment:
             commenter_id=res.get("commenterId"),
             reply_to=res.get("replyTo"),
             post_id=res.get("postId"),
+            forum_id=res.get("forumId"),
             created_at=res.get("createdAt"),
             modified_at=res.get("modifiedAt"),
             reply_count=res.get("replyCount"),

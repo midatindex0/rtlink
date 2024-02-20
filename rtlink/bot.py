@@ -36,6 +36,7 @@ class Bot:
         client: Optional[HTTPClient] = None,
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
+        setup_logging()
         self._client: HTTPClient = client or HTTPClient(
             api_url=api_url or "http://localhost:3758/api/v1"
         )
@@ -72,7 +73,6 @@ class Bot:
         Args:
             token (string): Your bot token
         """
-        setup_logging()
         email, password = token.split("@")
         await self._client.login(email, password)
         logger.info(

@@ -10,7 +10,7 @@ __import__("sys").path.append("../rtlink/")
 from rtlink import Bot  # noqa: E402 (ignore this)
 from rtlink.types import Comment  # noqa: E402 (ignore this)
 
-# We create a Bot instance passing the RtWalk GQL api api_url
+# We create a Bot instance passing the RtWalk GQL api url
 bot = Bot(api_url="http://localhost:3758/api/v1/")
 
 

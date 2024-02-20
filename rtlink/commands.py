@@ -59,13 +59,25 @@ class CommandManager(argparse.ArgumentParser):
 
     def add_command(self, command: Command):
         self.commands[command.name or command.fn.__name__] = command.fn
-        self.subparsers.add_parser(
-            command.name or command.fn.__name__,
-            help=command.fn.__doc__,
-            aliases=command.aliases,
-        )
-        for alias in command.aliases:
-            self.commands[alias] = command.fn
+        try:
+            self.subparsers.add_parser(
+                command.name or command.fn.__name__,
+                help=command.fn.__doc__,
+                aliases=command.aliases,
+            )
+            for alias in command.aliases:
+                self.commands[alias] = command.fn
+        except argparse.ArgumentError:
+            logger.warn('Overwriting command "{}"'.format(command.name))
+            self.remove_subparser(command.name)
+            for alias in command.aliases:
+                self.remove_subparser(alias)
+                self.commands[alias] = command.fn
+            self.subparsers.add_parser(
+                command.name or command.fn.__name__,
+                help=command.fn.__doc__,
+                aliases=command.aliases,
+            )
 
     async def try_process_command(self, comment: Comment) -> Any:
         prefix = f"@{self.bot.user.username}"
@@ -81,9 +93,9 @@ class CommandManager(argparse.ArgumentParser):
                 return
             logger.debug(f"Command namespace: {namespace}")
             if command := self.commands.get(namespace.command):
-                return await self.run(command, namespace, comment)
+                return await self._run(command, namespace, comment)
 
-    async def run(
+    async def _run(
         self,
         command: Union[CoroT, Callable],
         namespace: argparse.Namespace,
@@ -94,6 +106,14 @@ class CommandManager(argparse.ArgumentParser):
             return await command(ctx)
         else:
             return await asyncio.to_thread(command, ctx)
+
+    def remove_subparser(self, name):
+        for action in self._actions:
+            if (
+                isinstance(action, argparse._SubParsersAction)
+                and action.dest == "command"
+            ):
+                del action.choices[name]
 
 
 async def help_command(ctx: Ctx):
