@@ -1,12 +1,13 @@
 import asyncio
 from typing import Optional, Dict, List, Coroutine, TypeVar, Union, Callable, Any
-import logging
 import json
 import time
+import logging
 
 from .http import HTTPClient
 from .types import Comment, User, Forum
 from .utils import setup_logging
+from .commands import Command, CommandManager, help_command
 
 from websockets.client import connect
 
@@ -31,7 +32,6 @@ class Bot:
 
     def __init__(
         self,
-        prefix: str,
         api_url: Optional[str] = "http://localhost:3758/api/v1",
         client: Optional[HTTPClient] = None,
         loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -47,6 +47,10 @@ class Bot:
             "post": False,
             "post_edit": False,
         }
+
+        self.command_manager = CommandManager()
+        self.command_manager._set_bot(self)
+        self.command_manager.add_command(Command(help_command, "help"))
         asyncio.set_event_loop(loop)
 
     def is_closed(self) -> bool:
@@ -68,13 +72,15 @@ class Bot:
         Args:
             token (string): Your bot token
         """
+        setup_logging()
         email, password = token.split("@")
         await self._client.login(email, password)
         logger.info(
-            f"Bot logged in to {self._client.api_url} (ID: {self._client.user.id})"
+            f"Bot logged in to {self._client.api_url} (Username: {self._client.user.username})"
         )
         logger.debug(f"Self: {self._client.user}")
         self.user: User = self._client.user
+        self.command_manager.prog = f"@{self.user.username}"
         await self._on_login()
         try:
             async with connect(
@@ -107,6 +113,7 @@ class Bot:
         await self._client.logout()
         logger.info("Bot has logged out")
         await self._on_logout()
+        logger.info("Event loop will wait for tasks to finish (if any)...")
 
     async def _calc_latency_ms(self, ws):
         t1 = time.time()
@@ -127,7 +134,6 @@ class Bot:
 
         This is equivalent to calling `asyncio.run(bot.start(token))`
         """
-        setup_logging()
         asyncio.run(self.start(token))
 
     def on_event(self, name: str):
@@ -138,6 +144,13 @@ class Bot:
                 event.append(fn)
             else:
                 self._events[name] = [fn]
+
+        return __dec
+
+    def command(self, name: Optional[str] = None, aliases: List[str] = []):
+        def __dec(fn):
+            self._rte_options["comment"] = True
+            self.command_manager.add_command(Command(fn, name or fn.__name__, aliases))
 
         return __dec
 
@@ -158,6 +171,7 @@ class Bot:
 
     async def _on_comment(self, comment: Comment):
         await self.dispatch("comment", comment)
+        await self.command_manager.try_process_command(comment)
 
     async def fetch_forum(
         self,

@@ -1,27 +1,38 @@
 import os
 
 from dotenv import load_dotenv
-from rtlink import Bot, Comment
+from rtlink import Bot, Ctx
+from rtlink.vc import VcClient
+
+from aiortc.contrib.media import MediaPlayer
 
 load_dotenv()
 
 
-class SauceGodV3(Bot):
-    def __init__(self):
-        super().__init__("!", api_url="http://localhost:3758/api/v1/")
-        self._rte_options["comment"] = True
+bot = Bot(api_url="http://localhost:3758/api/v1/")
 
-    async def _on_login(self):
-        print("@{} has logged in to rtwalk".format(self.user.username))
-        return await super()._on_login()
-
-    async def _on_comment(self, comment: Comment):
-        if comment.content == "ping":
-            await comment.reply("Pong! Latency: {:.2f}ms".format(await self.latency()))
-        return await super()._on_comment(comment)
+player = MediaPlayer("./m.m4a")
+vc = VcClient(
+    url="ws://localhost:3001/ws?user=saucegod",
+    player=player,
+)
 
 
-bot = SauceGodV3()
+@bot.on_event("login")
+async def login():
+    await vc.run()
+
+
+@bot.on_event("logout")
+async def logout():
+    await vc.close()
+
+
+@bot.command(name="ping", aliases=["latency"])
+async def ping_command(ctx: Ctx):
+    """Replies with the RTE websocket latency."""
+    await ctx.reply(f"Pong! Latency: **{await bot.latency():.2f}ms**")
+
 
 if TOKEN := os.getenv("TOKEN"):
     bot.run(TOKEN)
