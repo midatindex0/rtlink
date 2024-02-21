@@ -3,9 +3,11 @@ import argparse
 import shlex
 import logging
 import asyncio
+import inspect
 
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     List,
     Optional,
     TypeVar,
@@ -15,6 +17,7 @@ from typing import (
     Dict,
     Union,
 )
+import typing
 
 from .types import Comment
 
@@ -26,10 +29,14 @@ Coro = Coroutine[Any, Any, T]
 CoroT = Callable[..., Coro[Any]]
 logger = logging.getLogger(__name__)
 
+
 # Types that define hw to parse arguments
-Flag = TypeVar("Flag")
-ShortFlag = TypeVar("ShortFlag")
-LongFlag = TypeVar("LongFlag")
+class Flag:
+    def __init__(self, _v: bool):
+        self._v = _v
+
+    def __bool__(self):
+        return self._v
 
 
 class Ctx:
@@ -41,9 +48,20 @@ class Ctx:
         return await self.comment.reply(content)
 
 
+allowed_annotations = [
+    inspect._empty,
+    Ctx,
+    "Ctx",
+    str,
+    int,
+    bool,
+    Flag,
+]
+
+
 class Command:
     def __init__(self, fn, name: Optional[str] = None, aliases: List[str] = []):
-        self.name = name
+        self.name = name or fn.__name__
         self.aliases = aliases
         self.fn = fn
 
@@ -53,31 +71,155 @@ class CommandManager(argparse.ArgumentParser):
         super().__init__(exit_on_error=False, *args, **kwargs)
 
     def _set_bot(self, bot: Bot):
+        self.signatures: Dict[str, inspect.Signature] = {}
         self.commands: Dict[str, Union[CoroT, Callable]] = {}
         self.subparsers = self.add_subparsers(dest="command")
         self.bot = bot
 
     def add_command(self, command: Command):
-        self.commands[command.name or command.fn.__name__] = command.fn
+        # First parse the command to get arguments
+        sig = inspect.signature(command.fn)
+        haskeywordonly = False
+        haspositionalorkeyword = False
+        for param in sig.parameters.values():
+            if (
+                typing.get_origin(param.annotation) is Annotated
+                and typing.get_args(param.annotation)[0] in allowed_annotations
+                and isinstance(typing.get_args(param.annotation)[1], str)
+            ):
+                continue
+            if param.annotation not in allowed_annotations:
+                logger.error(
+                    'Unknown argument ({}) annotation "{}" for command: "{}". Skipping.'.format(
+                        param.name,
+                        param.annotation,
+                        command.name,
+                    )
+                )
+                return
+            if param.kind == inspect._ParameterKind.KEYWORD_ONLY:
+                if haskeywordonly:
+                    logger.error(
+                        'Command "{}" can only have 1 keyword only argument. Skipping.'.format(
+                            command.name
+                        )
+                    )
+                    return
+                haskeywordonly = True
+            if param.kind == inspect._ParameterKind.POSITIONAL_OR_KEYWORD:
+                haspositionalorkeyword = True
+        if not haspositionalorkeyword:
+            logger.error(
+                "Command {} must have atlest 1 argument Ctx. Skipping.\n\t{}\n".format(
+                    command.name,
+                    sig,
+                )
+            )
+
+        self.commands[command.name] = command.fn
+        self.signatures[command.name] = sig
         try:
-            self.subparsers.add_parser(
-                command.name or command.fn.__name__,
+            parser = self.subparsers.add_parser(
+                command.name,
                 help=command.fn.__doc__,
                 aliases=command.aliases,
             )
+            self.add_args(parser, sig, command.name)
             for alias in command.aliases:
+                self.signatures[alias] = sig
                 self.commands[alias] = command.fn
         except argparse.ArgumentError:
             logger.warn('Overwriting command "{}"'.format(command.name))
-            self.remove_subparser(command.name)
+            self.remove_command(command.name)
             for alias in command.aliases:
-                self.remove_subparser(alias)
+                self.remove_command(alias)
                 self.commands[alias] = command.fn
-            self.subparsers.add_parser(
-                command.name or command.fn.__name__,
+                self.signatures[alias] = sig
+            parser = self.subparsers.add_parser(
+                command.name,
                 help=command.fn.__doc__,
                 aliases=command.aliases,
             )
+            self.add_args(parser, sig, command.name)
+
+    def add_args(self, parser, sig: inspect.Signature, command_name):
+        for i, param in enumerate(sig.parameters.values()):
+            if i == 0:
+                continue
+            default = None if param.default is inspect._empty else param.default
+            nargs = "?" if default else 1
+            if (
+                self.stripped_annotation(param.annotation) is inspect._empty
+                or self.stripped_annotation(param.annotation) is str
+            ):
+                if param.kind == inspect._ParameterKind.KEYWORD_ONLY:
+                    parser.add_argument(
+                        param.name,
+                        type=str,
+                        default=default,
+                        nargs=argparse.REMAINDER,
+                    )
+                    continue
+                parser.add_argument(param.name, type=str, default=default, nargs=nargs)
+            elif self.stripped_annotation(param.annotation) is int:
+                parser.add_argument(param.name, type=int, default=default, nargs=nargs)
+            elif self.stripped_annotation(param.annotation) is float:
+                parser.add_argument(
+                    param.name, type=float, default=default, nargs=nargs
+                )
+            elif self.stripped_annotation(param.annotation) is bool:
+                if len(param.name) > 1:
+                    parser.add_argument(
+                        "--" + param.name,
+                        default=default or False,
+                        action="store_true",
+                    )
+                else:
+                    parser.add_argument(
+                        "-" + param.name,
+                        default=default or False,
+                        action="store_true",
+                    )
+            elif self.stripped_annotation(param.annotation) is Flag:
+                if len(param.name) > 1:
+                    parser.add_argument(
+                        "--" + param.name,
+                        default=default or False,
+                        action="store_true",
+                    )
+                    parser.add_argument(
+                        "-" + param.name[0],
+                        default=default or False,
+                        action="store_true",
+                    )
+
+                else:
+                    parser.add_argument(
+                        "-" + param.name,
+                        default=default or False,
+                        action="store_true",
+                    )
+            else:
+                logger.warn(
+                    'Unknown annotation "{}" in command "{}". Substituting with "str".'.format(
+                        param.annotation, command_name
+                    )
+                )
+                if param.kind == inspect._ParameterKind.KEYWORD_ONLY:
+                    parser.add_argument(
+                        param.name,
+                        type=str,
+                        default=default,
+                        nargs=argparse.REMAINDER,
+                    )
+                    continue
+                parser.add_argument(param.name, type=str, default=default, nargs=nargs)
+
+    @staticmethod
+    def stripped_annotation(annotation: Any):
+        if typing.get_origin(annotation) is Annotated:
+            return typing.get_args(annotation)[0]
+        return annotation
 
     async def try_process_command(self, comment: Comment) -> Any:
         prefix = f"@{self.bot.user.username}"
@@ -87,13 +229,15 @@ class CommandManager(argparse.ArgumentParser):
                 namespace = self.parse_args(shlex.split(to_parse))
             except argparse.ArgumentError as e:
                 logger.warn(e)
-                await self.bot.dispatch(
-                    "command_error", e
-                )  # TODO: use correct rtwalk error
+                await self.bot.dispatch("error", e)  # TODO: use correct rtwalk error
                 return
             logger.debug(f"Command namespace: {namespace}")
             if command := self.commands.get(namespace.command):
-                return await self._run(command, namespace, comment)
+                try:
+                    return await self._run(command, namespace, comment)
+                except Exception as e:
+                    logger.exception(e)
+                    await self.bot.dispatch("command_error", e)
 
     async def _run(
         self,
@@ -107,7 +251,7 @@ class CommandManager(argparse.ArgumentParser):
         else:
             return await asyncio.to_thread(command, ctx)
 
-    def remove_subparser(self, name):
+    def remove_command(self, name):
         for action in self._actions:
             if (
                 isinstance(action, argparse._SubParsersAction)
