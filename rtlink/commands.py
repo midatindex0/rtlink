@@ -16,6 +16,7 @@ from typing import (
     Callable,
     Dict,
     Union,
+    Sequence,
 )
 import typing
 
@@ -64,6 +65,28 @@ class Command:
         self.name = name or fn.__name__
         self.aliases = aliases
         self.fn = fn
+
+
+class JoinAction(argparse.Action):
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[Any] | None,
+        option_string: str | None = None,
+    ) -> None:
+        if values and isinstance(values, list):
+            values = " ".join(values)  # type: ignore
+            setattr(namespace, self.dest, values)
+        if getattr(namespace, self.dest):
+            return
+        else:
+            raise argparse.ArgumentError(
+                self, "{} is a required argument that is missing".format(self.dest)
+            )
 
 
 class CommandManager(argparse.ArgumentParser):
@@ -157,7 +180,8 @@ class CommandManager(argparse.ArgumentParser):
                         param.name,
                         type=str,
                         default=default,
-                        nargs=argparse.REMAINDER,
+                        nargs="...",
+                        action=JoinAction,
                     )
                     continue
                 parser.add_argument(param.name, type=str, default=default, nargs=nargs)
@@ -184,15 +208,10 @@ class CommandManager(argparse.ArgumentParser):
                 if len(param.name) > 1:
                     parser.add_argument(
                         "--" + param.name,
-                        default=default or False,
-                        action="store_true",
-                    )
-                    parser.add_argument(
                         "-" + param.name[0],
                         default=default or False,
                         action="store_true",
                     )
-
                 else:
                     parser.add_argument(
                         "-" + param.name,
@@ -210,7 +229,8 @@ class CommandManager(argparse.ArgumentParser):
                         param.name,
                         type=str,
                         default=default,
-                        nargs=argparse.REMAINDER,
+                        nargs="+",
+                        action=JoinAction,
                     )
                     continue
                 parser.add_argument(param.name, type=str, default=default, nargs=nargs)
@@ -246,10 +266,13 @@ class CommandManager(argparse.ArgumentParser):
         comment: Comment,
     ) -> Any:
         ctx = Ctx(self.bot, comment)
+        args = namespace.__dict__
+        command_name = args.pop("command")
+        binds = self.signatures[command_name].bind(ctx, **args)
         if asyncio.iscoroutinefunction(command):
-            return await command(ctx)
+            return await command(*binds.args, **binds.kwargs)
         else:
-            return await asyncio.to_thread(command, ctx)
+            return await asyncio.to_thread(command, *binds.args, **binds.kwargs)
 
     def remove_command(self, name):
         for action in self._actions:
