@@ -28,6 +28,30 @@ class HTTPClient:
         self.user: Optional[User] = None
         self._cache: BaseCache = Cache()
 
+    async def get_api_info(self) -> dict:
+        try:
+            async with self.client as session:
+                res = await session.execute(
+                    gql(
+                        """
+                    query {
+                       version {
+                            major
+                            minor
+                            bugFix
+                            rte
+                            vc
+                            versionString
+                       } 
+                    }
+                    """
+                    )
+                )
+
+        except TransportQueryError as e:
+            raise _TransportQueryError(e)
+        return res["version"]
+
     async def login(self, email: str, password: str):
         try:
             async with self.client as session:
@@ -159,8 +183,25 @@ class HTTPClient:
                             id
                             content
                             commenterId
+                            forumId
                             replyTo
                             postId
+                            commenter {
+                                id
+                                username
+                                displayName
+                                bio
+                                pfp {
+                                    loc
+                                }
+                                banner  {
+                                    loc
+                                }
+                                createdAt
+                                modifiedAt
+                                admin
+                                bot
+                            }
                             createdAt
                             modifiedAt
                             replyCount

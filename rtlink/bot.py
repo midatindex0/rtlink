@@ -74,6 +74,7 @@ class Bot:
             token (string): Your bot token
         """
         email, password = token.split("@")
+        await self._validate_and_set_api_info()
         await self._client.login(email, password)
         logger.info(
             f"Bot logged in to {self._client.api_url} (Username: {self._client.user.username})"
@@ -85,7 +86,7 @@ class Bot:
         try:
             async with connect(
                 "{}?comment_new={}&comment_edit={}&post_new={}&post_edit={}".format(
-                    self._client.api_url.replace("http", "ws").replace("api", "rte"),
+                    self.rte_url,
                     self._rte_options["comment"],
                     self._rte_options["comment_edit"],
                     self._rte_options["post"],
@@ -93,7 +94,7 @@ class Bot:
                 )
             ) as ws:
                 self.ws = ws
-                logger.info("Listening to RTE websocket at ws://localhost:3758/rte/v1/")
+                logger.info("Listening to RTE websocket at {}".format(self.rte_url))
                 logger.info(
                     f"RTE websocket latency: {(await self._calc_latency_ms(ws)):.2f}ms"
                 )
@@ -113,12 +114,16 @@ class Bot:
         await self._client.logout()
         logger.info("Bot has logged out")
         await self._on_logout()
-        logger.info("Event loop will wait for tasks to finish (if any)...")
 
     async def _calc_latency_ms(self, ws):
         t1 = time.time()
         await ws.ping()
         return (time.time() - t1) * 1000
+
+    async def _validate_and_set_api_info(self):
+        version = await self._client.get_api_info()
+        self.rte_url = version["rte"]
+        self.vc_url = version["vc"]
 
     async def latency(self) -> float:
         """The RTE websocket latency in milliseconds.

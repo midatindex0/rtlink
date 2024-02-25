@@ -30,6 +30,21 @@ class User:
     def _client(self, v):
         self.__client = v
 
+    @classmethod
+    def _populate(cls, res):
+        return cls(
+            id=res.get("id"),
+            username=res.get("username"),
+            display_name=res.get("displayName"),
+            created_at=res.get("createdAt"),
+            modified_at=res.get("modifiedAt"),
+            bio=res.get("bio"),
+            pfp=File(res.get("pfp")) if res.get("pfp") else None,
+            banner=File(res.get("banner")) if res.get("banner") else None,
+            admin=res.get("admin"),
+            bot=res.get("bot"),
+        )
+
 
 @dataclass
 class Forum:
@@ -56,6 +71,7 @@ class Comment:
     reply_to: Optional[str]
     post_id: str
     forum_id: str
+    commenter: User
     created_at: int
     modified_at: int
     reply_count: int
@@ -81,6 +97,7 @@ class Comment:
             reply_to=res.get("replyTo"),
             post_id=res.get("postId"),
             forum_id=res.get("forumId"),
+            commenter=User._populate(res.get("commenter")),
             created_at=res.get("createdAt"),
             modified_at=res.get("modifiedAt"),
             reply_count=res.get("replyCount"),

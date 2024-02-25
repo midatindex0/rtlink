@@ -20,6 +20,8 @@ from typing import (
 )
 import typing
 
+from rtlink.vc import VcClient
+
 from .types import Comment
 
 if TYPE_CHECKING:
@@ -44,6 +46,7 @@ class Ctx:
     def __init__(self, bot: Bot, comment: Comment):
         self.bot = bot
         self.comment = comment
+        self.vc = VcClient(bot, bot.vc_url, "dreamh")
 
     async def reply(self, content: str) -> Comment:
         return await self.comment.reply(content)
@@ -138,6 +141,7 @@ class CommandManager(argparse.ArgumentParser):
                     sig,
                 )
             )
+            return
 
         self.commands[command.name] = command.fn
         self.signatures[command.name] = sig
